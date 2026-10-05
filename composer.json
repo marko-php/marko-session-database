@@ -5,10 +5,12 @@
     "license": "MIT",
     "require": {
         "php": "^8.5",
+        "marko/clock": "self.version",
         "marko/session": "self.version",
         "marko/database": "self.version"
     },
     "require-dev": {
+        "marko/testing": "self.version",
         "pestphp/pest": "^4.0"
     },
     "autoload": {

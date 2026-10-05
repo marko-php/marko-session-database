@@ -8,6 +8,7 @@ use Marko\Database\Connection\ConnectionInterface;
 use Marko\Database\Connection\StatementInterface;
 use Marko\Session\Contracts\SessionHandlerInterface;
 use Marko\Session\Database\Handler\DatabaseSessionHandler;
+use Marko\Testing\Fake\FakeClock;
 use RuntimeException;
 
 class MockConnection implements ConnectionInterface
@@ -122,7 +123,8 @@ class MockConnection implements ConnectionInterface
 
 beforeEach(function (): void {
     $this->connection = new MockConnection();
-    $this->handler = new DatabaseSessionHandler($this->connection);
+    $this->clock = new FakeClock('2026-01-01 12:00:00 UTC');
+    $this->handler = new DatabaseSessionHandler($this->connection, $this->clock);
 });
 
 describe('DatabaseSessionHandler', function (): void {
@@ -142,7 +144,7 @@ describe('DatabaseSessionHandler', function (): void {
         $this->connection->sessions['test-id'] = [
             'id' => 'test-id',
             'payload' => 'serialized-data',
-            'last_activity' => time(),
+            'last_activity' => $this->clock->now()->getTimestamp(),
         ];
 
         expect($this->handler->read('test-id'))->toBe('serialized-data');
@@ -184,12 +186,12 @@ describe('DatabaseSessionHandler', function (): void {
         $this->connection->sessions['expired'] = [
             'id' => 'expired',
             'payload' => 'old-data',
-            'last_activity' => time() - 7200,
+            'last_activity' => $this->clock->now()->getTimestamp() - 7200,
         ];
         $this->connection->sessions['active'] = [
             'id' => 'active',
             'payload' => 'new-data',
-            'last_activity' => time(),
+            'last_activity' => $this->clock->now()->getTimestamp(),
         ];
 
         $this->handler->gc(3600);
@@ -202,12 +204,12 @@ describe('DatabaseSessionHandler', function (): void {
         $this->connection->sessions['expired-1'] = [
             'id' => 'expired-1',
             'payload' => 'data',
-            'last_activity' => time() - 7200,
+            'last_activity' => $this->clock->now()->getTimestamp() - 7200,
         ];
         $this->connection->sessions['expired-2'] = [
             'id' => 'expired-2',
             'payload' => 'data',
-            'last_activity' => time() - 7200,
+            'last_activity' => $this->clock->now()->getTimestamp() - 7200,
         ];
 
         $count = $this->handler->gc(3600);
@@ -219,7 +221,7 @@ describe('DatabaseSessionHandler', function (): void {
         $this->connection->sessions['recent'] = [
             'id' => 'recent',
             'payload' => 'fresh-data',
-            'last_activity' => time() - 100,
+            'last_activity' => $this->clock->now()->getTimestamp() - 100,
         ];
 
         $count = $this->handler->gc(3600);
@@ -227,6 +229,25 @@ describe('DatabaseSessionHandler', function (): void {
         expect($count)->toBe(0)
             ->and($this->connection->sessions)->toHaveKey('recent')
             ->and($this->connection->sessions['recent']['payload'])->toBe('fresh-data');
+    });
+
+    it('stores the clock time as last_activity on write', function (): void {
+        $this->handler->write('clock-id', 'data');
+
+        expect($this->connection->sessions['clock-id']['last_activity'])
+            ->toBe($this->clock->now()->getTimestamp());
+    });
+
+    it('deletes sessions older than max lifetime relative to the clock', function (): void {
+        $this->handler->write('aging-id', 'data');
+
+        $countBefore = $this->handler->gc(3600);
+        $this->clock->travel('+3601 seconds');
+        $countAfter = $this->handler->gc(3600);
+
+        expect($countBefore)->toBe(0)
+            ->and($countAfter)->toBe(1)
+            ->and($this->connection->sessions)->not->toHaveKey('aging-id');
     });
 
     it('writes a session row via a single upsert statement', function (): void {
@@ -239,7 +260,7 @@ describe('DatabaseSessionHandler', function (): void {
         $this->connection->sessions['existing-id'] = [
             'id' => 'existing-id',
             'payload' => 'original-data',
-            'last_activity' => time() - 100,
+            'last_activity' => $this->clock->now()->getTimestamp() - 100,
         ];
 
         $this->handler->write('existing-id', 'updated-data');
@@ -258,7 +279,7 @@ describe('DatabaseSessionHandler', function (): void {
 
     it('issues the MySQL upsert form for a MySQL connection', function (): void {
         $mysqlConnection = new MockConnection('mysql');
-        $handler = new DatabaseSessionHandler($mysqlConnection);
+        $handler = new DatabaseSessionHandler($mysqlConnection, $this->clock);
 
         $handler->write('mysql-id', 'mysql-data');
 
@@ -268,7 +289,7 @@ describe('DatabaseSessionHandler', function (): void {
 
     it('issues the ON CONFLICT upsert form for a Postgres or SQLite connection', function (): void {
         $pgsqlConnection = new MockConnection('pgsql');
-        $handler = new DatabaseSessionHandler($pgsqlConnection);
+        $handler = new DatabaseSessionHandler($pgsqlConnection, $this->clock);
 
         $handler->write('pgsql-id', 'pgsql-data');
 
@@ -277,7 +298,7 @@ describe('DatabaseSessionHandler', function (): void {
             ->and($sql)->toContain('DO UPDATE');
 
         $sqliteConnection = new MockConnection('sqlite');
-        $sqliteHandler = new DatabaseSessionHandler($sqliteConnection);
+        $sqliteHandler = new DatabaseSessionHandler($sqliteConnection, $this->clock);
 
         $sqliteHandler->write('sqlite-id', 'sqlite-data');
 

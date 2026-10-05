@@ -6,11 +6,13 @@ namespace Marko\Session\Database\Handler;
 
 use Marko\Database\Connection\ConnectionInterface;
 use Marko\Session\Contracts\SessionHandlerInterface;
+use Psr\Clock\ClockInterface;
 
 readonly class DatabaseSessionHandler implements SessionHandlerInterface
 {
     public function __construct(
         private ConnectionInterface $connection,
+        private ClockInterface $clock,
     ) {}
 
     public function open(
@@ -44,15 +46,17 @@ readonly class DatabaseSessionHandler implements SessionHandlerInterface
         string $id,
         string $data,
     ): bool {
+        $now = $this->clock->now()->getTimestamp();
+
         if ($this->connection->driverName() === 'mysql') {
             $this->connection->execute(
                 'INSERT INTO sessions (id, payload, last_activity) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE payload = VALUES(payload), last_activity = VALUES(last_activity)',
-                [$id, $data, time()],
+                [$id, $data, $now],
             );
         } else {
             $this->connection->execute(
                 'INSERT INTO sessions (id, payload, last_activity) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET payload = excluded.payload, last_activity = excluded.last_activity',
-                [$id, $data, time()],
+                [$id, $data, $now],
             );
         }
 
@@ -73,7 +77,7 @@ readonly class DatabaseSessionHandler implements SessionHandlerInterface
     public function gc(
         int $max_lifetime,
     ): int|false {
-        $expireTime = time() - $max_lifetime;
+        $expireTime = $this->clock->now()->getTimestamp() - $max_lifetime;
 
         return $this->connection->execute(
             'DELETE FROM sessions WHERE last_activity < ?',
