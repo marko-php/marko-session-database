@@ -8,7 +8,7 @@ Database session driver — stores session data in a SQL table for shared access
 composer require marko/session-database
 ```
 
-Requires `marko/database` for the database connection.
+Requires `marko/database` for the database connection. Then run `marko db:migrate` to create the `sessions` table from the entity the package ships.
 
 ## Quick Example
 
@@ -25,7 +25,7 @@ public function handle(): void
 }
 ```
 
-Installing this package automatically registers the database handler, binds `SessionInterface`, and adds `SessionMiddleware` globally. No manual configuration is needed.
+Installing this package automatically registers the database handler, binds `SessionInterface`, and adds `SessionMiddleware` globally. No other configuration is needed.
 
 ## Documentation
 

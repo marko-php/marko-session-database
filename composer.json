@@ -10,6 +10,8 @@
         "marko/database": "self.version"
     },
     "require-dev": {
+        "marko/database-mysql": "self.version",
+        "marko/database-pgsql": "self.version",
         "marko/testing": "self.version",
         "pestphp/pest": "^4.0"
     },
