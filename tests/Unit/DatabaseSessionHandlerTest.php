@@ -6,9 +6,11 @@ namespace Marko\Session\Database\Tests\Unit;
 
 use Marko\Database\Connection\ConnectionInterface;
 use Marko\Database\Connection\StatementInterface;
+use Marko\Session\Config\SessionConfig;
 use Marko\Session\Contracts\SessionHandlerInterface;
 use Marko\Session\Database\Handler\DatabaseSessionHandler;
 use Marko\Testing\Fake\FakeClock;
+use Marko\Testing\Fake\FakeConfigRepository;
 use RuntimeException;
 
 class MockConnection implements ConnectionInterface
@@ -36,6 +38,16 @@ class MockConnection implements ConnectionInterface
         string $sql,
         array $bindings = [],
     ): array {
+        if (str_contains($sql, 'SELECT 1') && str_contains($sql, 'last_activity >= ?')) {
+            [$id, $activeSince] = $bindings;
+
+            if (isset($this->sessions[$id]) && $this->sessions[$id]['last_activity'] >= $activeSince) {
+                return [['1' => 1]];
+            }
+
+            return [];
+        }
+
         if (str_contains($sql, 'SELECT') && str_contains($sql, 'WHERE id')) {
             $id = $bindings[0];
 
@@ -71,6 +83,18 @@ class MockConnection implements ConnectionInterface
                     'last_activity' => $lastActivity,
                 ];
             }
+
+            return 1;
+        }
+
+        if (str_contains($sql, 'UPDATE sessions SET last_activity = ? WHERE id = ?')) {
+            [$lastActivity, $id] = $bindings;
+
+            if (!isset($this->sessions[$id])) {
+                return 0;
+            }
+
+            $this->sessions[$id]['last_activity'] = $lastActivity;
 
             return 1;
         }
@@ -121,10 +145,17 @@ class MockConnection implements ConnectionInterface
     }
 }
 
+function createDatabaseSessionConfig(): SessionConfig
+{
+    return new SessionConfig(new FakeConfigRepository([
+        'session.lifetime' => 60,
+    ]));
+}
+
 beforeEach(function (): void {
     $this->connection = new MockConnection();
     $this->clock = new FakeClock('2026-01-01 12:00:00 UTC');
-    $this->handler = new DatabaseSessionHandler($this->connection, $this->clock);
+    $this->handler = new DatabaseSessionHandler($this->connection, createDatabaseSessionConfig(), $this->clock);
 });
 
 describe('DatabaseSessionHandler', function (): void {
@@ -279,7 +310,7 @@ describe('DatabaseSessionHandler', function (): void {
 
     it('issues the MySQL upsert form for a MySQL connection', function (): void {
         $mysqlConnection = new MockConnection('mysql');
-        $handler = new DatabaseSessionHandler($mysqlConnection, $this->clock);
+        $handler = new DatabaseSessionHandler($mysqlConnection, createDatabaseSessionConfig(), $this->clock);
 
         $handler->write('mysql-id', 'mysql-data');
 
@@ -289,7 +320,7 @@ describe('DatabaseSessionHandler', function (): void {
 
     it('issues the ON CONFLICT upsert form for a Postgres or SQLite connection', function (): void {
         $pgsqlConnection = new MockConnection('pgsql');
-        $handler = new DatabaseSessionHandler($pgsqlConnection, $this->clock);
+        $handler = new DatabaseSessionHandler($pgsqlConnection, createDatabaseSessionConfig(), $this->clock);
 
         $handler->write('pgsql-id', 'pgsql-data');
 
@@ -298,12 +329,64 @@ describe('DatabaseSessionHandler', function (): void {
             ->and($sql)->toContain('DO UPDATE');
 
         $sqliteConnection = new MockConnection('sqlite');
-        $sqliteHandler = new DatabaseSessionHandler($sqliteConnection, $this->clock);
+        $sqliteHandler = new DatabaseSessionHandler($sqliteConnection, createDatabaseSessionConfig(), $this->clock);
 
         $sqliteHandler->write('sqlite-id', 'sqlite-data');
 
         $sqliteSql = $sqliteConnection->executedStatements[0]['sql'];
         expect($sqliteSql)->toContain('ON CONFLICT')
             ->and($sqliteSql)->toContain('DO UPDATE');
+    });
+});
+
+describe('strict session ids', function (): void {
+    it('validates an id whose row is within the lifetime', function (): void {
+        $this->connection->sessions['live-id'] = [
+            'id' => 'live-id',
+            'payload' => 'data',
+            'last_activity' => $this->clock->now()->getTimestamp() - 3600,
+        ];
+
+        expect($this->handler->validateId('live-id'))->toBeTrue();
+    });
+
+    it('rejects an id with no row', function (): void {
+        expect($this->handler->validateId('never-issued'))->toBeFalse();
+    });
+
+    it('rejects an id whose last activity is older than the lifetime', function (): void {
+        $this->connection->sessions['stale-id'] = [
+            'id' => 'stale-id',
+            'payload' => 'data',
+            'last_activity' => $this->clock->now()->getTimestamp() - 3601,
+        ];
+
+        expect($this->handler->validateId('stale-id'))->toBeFalse();
+    });
+
+    it('updates only last_activity when updating the timestamp', function (): void {
+        $this->connection->sessions['touched-id'] = [
+            'id' => 'touched-id',
+            'payload' => 'original-payload',
+            'last_activity' => $this->clock->now()->getTimestamp() - 1800,
+        ];
+
+        $result = $this->handler->updateTimestamp('touched-id', 'ignored-payload');
+
+        expect($result)->toBeTrue()
+            ->and($this->connection->sessions['touched-id']['payload'])->toBe('original-payload')
+            ->and($this->connection->sessions['touched-id']['last_activity'])
+            ->toBe($this->clock->now()->getTimestamp())
+            ->and($this->connection->executedStatements[0]['sql'])->not->toContain('payload');
+    });
+
+    it('does not insert a row when updating the timestamp', function (): void {
+        $this->handler->updateTimestamp('never-issued', '');
+
+        expect($this->connection->sessions)->not->toHaveKey('never-issued');
+    });
+
+    it('returns true when updating the timestamp of an id with no row', function (): void {
+        expect($this->handler->updateTimestamp('never-issued', ''))->toBeTrue();
     });
 });

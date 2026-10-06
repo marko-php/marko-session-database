@@ -34,6 +34,13 @@ class StatementRecordingConnection implements ConnectionInterface
     /** @var array<int, string> */
     public array $executed = [];
 
+    /**
+     * Stored sessions the connection answers for, keyed by id.
+     *
+     * @var array<string, string>
+     */
+    public array $storedPayloads = [];
+
     public function connect(): void {}
 
     public function disconnect(): void {}
@@ -48,8 +55,15 @@ class StatementRecordingConnection implements ConnectionInterface
         array $bindings = [],
     ): array {
         $this->queries[] = $sql;
+        $id = $bindings[0] ?? null;
 
-        return [];
+        if (!is_string($id) || !isset($this->storedPayloads[$id])) {
+            return [];
+        }
+
+        return str_contains($sql, 'SELECT 1')
+            ? [['1' => 1]]
+            : [['payload' => $this->storedPayloads[$id]]];
     }
 
     public function execute(
@@ -134,7 +148,7 @@ function botTrafficHarness(): array
         'session.gc_divisor' => 100,
     ]));
     $clock = new FakeClock();
-    $session = new Session(new DatabaseSessionHandler($connection, $clock), $config);
+    $session = new Session(new DatabaseSessionHandler($connection, $config, $clock), $config);
 
     $container = new Container();
     $container->instance(SessionConfig::class, $config);
@@ -199,3 +213,44 @@ it('writes the session and sets the cookie for a matched route that stores a val
         ->and($response->cookies()[0]->name())->toBe('marko_session')
         ->and($connection->sessionWrites())->toHaveCount(1);
 });
+
+function botGetWithCookie(
+    string $path,
+    string $sessionId,
+): Request {
+    return new Request(
+        server: ['REQUEST_METHOD' => 'GET', 'REQUEST_URI' => $path],
+        cookies: ['marko_session' => $sessionId],
+    );
+}
+
+it('creates no session row when an unknown cookie is replayed repeatedly', function (): void {
+    ['router' => $router, 'connection' => $connection] = botTrafficHarness();
+    $unknownId = str_repeat('a', 40);
+
+    $responses = [];
+
+    for ($i = 0; $i < 5; $i++) {
+        $responses[] = $router->handle(botGetWithCookie('/', $unknownId));
+    }
+
+    expect($connection->sessionWrites())->toBeEmpty()
+        ->and($connection->executed)->toBeEmpty()
+        ->and(array_map(
+            fn (Response $response): string => $response->cookies()[0]->value(),
+            $responses,
+        ))->toBe(['', '', '', '', '']);
+})->issue(266);
+
+it('refreshes last activity without rewriting the payload for a resumed unmodified session', function (): void {
+    ['router' => $router, 'connection' => $connection] = botTrafficHarness();
+    $knownId = str_repeat('b', 40);
+    $connection->storedPayloads[$knownId] = 'cart|a:1:{i:0;s:5:"sku-1";}';
+
+    $response = $router->handle(botGetWithCookie('/', $knownId));
+
+    expect($response->cookies())->toBeEmpty()
+        ->and($connection->executed)->toHaveCount(1)
+        ->and($connection->executed[0])->toStartWith('UPDATE sessions SET last_activity = ?')
+        ->and($connection->executed[0])->not->toContain('payload');
+})->issue(266);

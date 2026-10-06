@@ -5,13 +5,17 @@ declare(strict_types=1);
 namespace Marko\Session\Database\Handler;
 
 use Marko\Database\Connection\ConnectionInterface;
+use Marko\Session\Config\SessionConfig;
 use Marko\Session\Contracts\SessionHandlerInterface;
 use Psr\Clock\ClockInterface;
 
 readonly class DatabaseSessionHandler implements SessionHandlerInterface
 {
+    private const int SECONDS_PER_MINUTE = 60;
+
     public function __construct(
         private ConnectionInterface $connection,
+        private SessionConfig $config,
         private ClockInterface $clock,
     ) {}
 
@@ -83,5 +87,37 @@ readonly class DatabaseSessionHandler implements SessionHandlerInterface
             'DELETE FROM sessions WHERE last_activity < ?',
             [$expireTime],
         );
+    }
+
+    /**
+     * A session is known when its row exists and its last activity falls
+     * within the configured lifetime, measured with the injected clock.
+     * Expired rows are left for gc() to delete.
+     */
+    public function validateId(
+        string $id,
+    ): bool {
+        $activeSince = $this->clock->now()->getTimestamp() - $this->config->lifetime() * self::SECONDS_PER_MINUTE;
+
+        return $this->connection->query(
+            'SELECT 1 FROM sessions WHERE id = ? AND last_activity >= ?',
+            [$id, $activeSince],
+        ) !== [];
+    }
+
+    /**
+     * Slide the expiry of an existing session forward without rewriting its
+     * payload. Never inserts: an id with no row stays without one.
+     */
+    public function updateTimestamp(
+        string $id,
+        string $data,
+    ): bool {
+        $this->connection->execute(
+            'UPDATE sessions SET last_activity = ? WHERE id = ?',
+            [$this->clock->now()->getTimestamp(), $id],
+        );
+
+        return true;
     }
 }
