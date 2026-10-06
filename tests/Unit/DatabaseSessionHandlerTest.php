@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Marko\Session\Database\Tests\Unit;
 
 use Marko\Database\Connection\ConnectionInterface;
+use Marko\Database\Connection\PrimaryReadInterface;
 use Marko\Database\Connection\StatementInterface;
 use Marko\Session\Config\SessionConfig;
 use Marko\Session\Contracts\SessionHandlerInterface;
@@ -163,6 +164,46 @@ class MockConnection implements ConnectionInterface
         $delimiter = $this->driver === 'mysql' ? '`' : '"';
 
         return $delimiter . str_replace($delimiter, $delimiter . $delimiter, $identifier) . $delimiter;
+    }
+}
+
+/**
+ * A connection that routes reads to a replica unless they run inside
+ * onPrimary(), and records which reads reached the primary.
+ */
+class PrimaryRoutingConnection extends MockConnection implements PrimaryReadInterface
+{
+    private bool $onPrimary = false;
+
+    /** @var list<string> */
+    public array $primaryReads = [];
+
+    /** @var list<string> */
+    public array $replicaReads = [];
+
+    public function onPrimary(
+        callable $callback,
+    ): mixed {
+        $this->onPrimary = true;
+
+        try {
+            return $callback();
+        } finally {
+            $this->onPrimary = false;
+        }
+    }
+
+    public function query(
+        string $sql,
+        array $bindings = [],
+    ): array {
+        if ($this->onPrimary) {
+            $this->primaryReads[] = $sql;
+        } else {
+            $this->replicaReads[] = $sql;
+        }
+
+        return parent::query($sql, $bindings);
     }
 }
 
@@ -430,4 +471,46 @@ describe('strict session ids', function (): void {
         'mysql' => ['mysql', '`sessions`'],
         'pgsql' => ['pgsql', '"sessions"'],
     ])->issue(338);
+});
+
+describe('primary reads', function (): void {
+    it('reads the session payload from the primary on a read/write split connection', function (): void {
+        $connection = new PrimaryRoutingConnection();
+        $connection->sessions['session-id'] = [
+            'id' => 'session-id',
+            'payload' => 'authenticated',
+            'last_activity' => $this->clock->now()->getTimestamp(),
+        ];
+        $handler = new DatabaseSessionHandler($connection, createDatabaseSessionConfig(), $this->clock);
+
+        expect($handler->read('session-id'))->toBe('authenticated')
+            ->and($connection->primaryReads)->toHaveCount(1)
+            ->and($connection->replicaReads)->toBe([]);
+    })->issue(390);
+
+    it('validates the session id against the primary on a read/write split connection', function (): void {
+        $connection = new PrimaryRoutingConnection();
+        $connection->sessions['session-id'] = [
+            'id' => 'session-id',
+            'payload' => 'authenticated',
+            'last_activity' => $this->clock->now()->getTimestamp(),
+        ];
+        $handler = new DatabaseSessionHandler($connection, createDatabaseSessionConfig(), $this->clock);
+
+        expect($handler->validateId('session-id'))->toBeTrue()
+            ->and($connection->primaryReads)->toHaveCount(1)
+            ->and($connection->replicaReads)->toBe([]);
+    })->issue(390);
+
+    it('reads directly from a connection that has no replicas to route around', function (): void {
+        $this->connection->sessions['session-id'] = [
+            'id' => 'session-id',
+            'payload' => 'data',
+            'last_activity' => $this->clock->now()->getTimestamp(),
+        ];
+
+        expect($this->connection)->not->toBeInstanceOf(PrimaryReadInterface::class)
+            ->and($this->handler->read('session-id'))->toBe('data')
+            ->and($this->handler->validateId('session-id'))->toBeTrue();
+    })->issue(390);
 });

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Marko\Session\Database\Handler;
 
 use Marko\Database\Connection\ConnectionInterface;
+use Marko\Database\Connection\PrimaryReadInterface;
 use Marko\Session\Config\SessionConfig;
 use Marko\Session\Contracts\SessionHandlerInterface;
 use Psr\Clock\ClockInterface;
@@ -29,6 +30,29 @@ readonly class DatabaseSessionHandler implements SessionHandlerInterface
         return $this->connection->quoteIdentifier(self::TABLE);
     }
 
+    /**
+     * Run a session read against the primary database.
+     *
+     * Logout and ID regeneration delete the old row on the primary. Reading
+     * it back from a lagging replica would let a replayed old cookie pass
+     * validateId() and read() its authenticated payload, so a connection that
+     * can route reads elsewhere is told to use the primary.
+     *
+     * @return array<array<string, mixed>>
+     */
+    private function queryPrimary(
+        string $sql,
+        array $bindings,
+    ): array {
+        if ($this->connection instanceof PrimaryReadInterface) {
+            return $this->connection->onPrimary(
+                fn (): array => $this->connection->query($sql, $bindings),
+            );
+        }
+
+        return $this->connection->query($sql, $bindings);
+    }
+
     public function open(
         string $path,
         string $name,
@@ -44,7 +68,7 @@ readonly class DatabaseSessionHandler implements SessionHandlerInterface
     public function read(
         string $id,
     ): string|false {
-        $results = $this->connection->query(
+        $results = $this->queryPrimary(
             "SELECT payload FROM {$this->table()} WHERE id = ?",
             [$id],
         );
@@ -109,7 +133,7 @@ readonly class DatabaseSessionHandler implements SessionHandlerInterface
     ): bool {
         $activeSince = $this->clock->now()->getTimestamp() - $this->config->lifetime() * self::SECONDS_PER_MINUTE;
 
-        return $this->connection->query(
+        return $this->queryPrimary(
             "SELECT 1 FROM {$this->table()} WHERE id = ? AND last_activity >= ?",
             [$id, $activeSince],
         ) !== [];
