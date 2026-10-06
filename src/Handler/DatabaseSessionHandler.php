@@ -13,11 +13,21 @@ readonly class DatabaseSessionHandler implements SessionHandlerInterface
 {
     private const int SECONDS_PER_MINUTE = 60;
 
+    private const string TABLE = 'sessions';
+
     public function __construct(
         private ConnectionInterface $connection,
         private SessionConfig $config,
         private ClockInterface $clock,
     ) {}
+
+    /**
+     * The sessions table name quoted for the connection's SQL dialect.
+     */
+    private function table(): string
+    {
+        return $this->connection->quoteIdentifier(self::TABLE);
+    }
 
     public function open(
         string $path,
@@ -35,7 +45,7 @@ readonly class DatabaseSessionHandler implements SessionHandlerInterface
         string $id,
     ): string|false {
         $results = $this->connection->query(
-            'SELECT payload FROM sessions WHERE id = ?',
+            "SELECT payload FROM {$this->table()} WHERE id = ?",
             [$id],
         );
 
@@ -54,12 +64,12 @@ readonly class DatabaseSessionHandler implements SessionHandlerInterface
 
         if ($this->connection->driverName() === 'mysql') {
             $this->connection->execute(
-                'INSERT INTO sessions (id, payload, last_activity) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE payload = VALUES(payload), last_activity = VALUES(last_activity)',
+                "INSERT INTO {$this->table()} (id, payload, last_activity) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE payload = VALUES(payload), last_activity = VALUES(last_activity)",
                 [$id, $data, $now],
             );
         } else {
             $this->connection->execute(
-                'INSERT INTO sessions (id, payload, last_activity) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET payload = excluded.payload, last_activity = excluded.last_activity',
+                "INSERT INTO {$this->table()} (id, payload, last_activity) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET payload = excluded.payload, last_activity = excluded.last_activity",
                 [$id, $data, $now],
             );
         }
@@ -71,7 +81,7 @@ readonly class DatabaseSessionHandler implements SessionHandlerInterface
         string $id,
     ): bool {
         $this->connection->execute(
-            'DELETE FROM sessions WHERE id = ?',
+            "DELETE FROM {$this->table()} WHERE id = ?",
             [$id],
         );
 
@@ -84,7 +94,7 @@ readonly class DatabaseSessionHandler implements SessionHandlerInterface
         $expireTime = $this->clock->now()->getTimestamp() - $max_lifetime;
 
         return $this->connection->execute(
-            'DELETE FROM sessions WHERE last_activity < ?',
+            "DELETE FROM {$this->table()} WHERE last_activity < ?",
             [$expireTime],
         );
     }
@@ -100,7 +110,7 @@ readonly class DatabaseSessionHandler implements SessionHandlerInterface
         $activeSince = $this->clock->now()->getTimestamp() - $this->config->lifetime() * self::SECONDS_PER_MINUTE;
 
         return $this->connection->query(
-            'SELECT 1 FROM sessions WHERE id = ? AND last_activity >= ?',
+            "SELECT 1 FROM {$this->table()} WHERE id = ? AND last_activity >= ?",
             [$id, $activeSince],
         ) !== [];
     }
@@ -114,7 +124,7 @@ readonly class DatabaseSessionHandler implements SessionHandlerInterface
         string $data,
     ): bool {
         $this->connection->execute(
-            'UPDATE sessions SET last_activity = ? WHERE id = ?',
+            "UPDATE {$this->table()} SET last_activity = ? WHERE id = ?",
             [$this->clock->now()->getTimestamp(), $id],
         );
 

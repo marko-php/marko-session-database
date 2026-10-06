@@ -21,6 +21,9 @@ class MockConnection implements ConnectionInterface
     /** @var array<int, array{sql: string, bindings: array<int, mixed>}> */
     public array $executedStatements = [];
 
+    /** @var list<string> */
+    public array $queriedStatements = [];
+
     public function __construct(
         private readonly string $driver = 'sqlite',
     ) {}
@@ -38,6 +41,8 @@ class MockConnection implements ConnectionInterface
         string $sql,
         array $bindings = [],
     ): array {
+        $this->queriedStatements[] = $sql;
+
         if (str_contains($sql, 'SELECT 1') && str_contains($sql, 'last_activity >= ?')) {
             [$id, $activeSince] = $bindings;
 
@@ -87,7 +92,7 @@ class MockConnection implements ConnectionInterface
             return 1;
         }
 
-        if (str_contains($sql, 'UPDATE sessions SET last_activity = ? WHERE id = ?')) {
+        if (str_contains($sql, 'SET last_activity = ? WHERE id = ?')) {
             [$lastActivity, $id] = $bindings;
 
             if (!isset($this->sessions[$id])) {
@@ -149,10 +154,15 @@ class MockConnection implements ConnectionInterface
         return false;
     }
 
+    /**
+     * Quotes like the named driver: a backtick for mysql, a double quote otherwise.
+     */
     public function quoteIdentifier(
         string $identifier,
     ): string {
-        return '"' . str_replace('"', '""', $identifier) . '"';
+        $delimiter = $this->driver === 'mysql' ? '`' : '"';
+
+        return $delimiter . str_replace($delimiter, $delimiter . $delimiter, $identifier) . $delimiter;
     }
 }
 
@@ -400,4 +410,24 @@ describe('strict session ids', function (): void {
     it('returns true when updating the timestamp of an id with no row', function (): void {
         expect($this->handler->updateTimestamp('never-issued', ''))->toBeTrue();
     });
+
+    it('quotes the sessions table in every statement', function (string $driver, string $quoted): void {
+        $connection = new MockConnection($driver);
+        $handler = new DatabaseSessionHandler($connection, createDatabaseSessionConfig(), $this->clock);
+
+        $handler->write('session-id', 'payload');
+        $handler->read('session-id');
+        $handler->validateId('session-id');
+        $handler->updateTimestamp('session-id', 'payload');
+        $handler->destroy('session-id');
+        $handler->gc(60);
+
+        $statements = [...array_column($connection->executedStatements, 'sql'), ...$connection->queriedStatements];
+
+        expect($statements)->toHaveCount(6)
+            ->and(array_filter($statements, fn (string $sql): bool => !str_contains($sql, " $quoted ")))->toBe([]);
+    })->with([
+        'mysql' => ['mysql', '`sessions`'],
+        'pgsql' => ['pgsql', '"sessions"'],
+    ])->issue(338);
 });

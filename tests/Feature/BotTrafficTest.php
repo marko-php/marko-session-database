@@ -109,9 +109,9 @@ class StatementRecordingConnection implements ConnectionInterface
     {
         return array_values(array_filter(
             $this->executed,
-            fn (string $sql): bool => str_contains($sql, 'INSERT INTO sessions') || str_contains(
+            fn (string $sql): bool => str_contains($sql, 'INSERT INTO "sessions"') || str_contains(
                 $sql,
-                'UPDATE sessions',
+                'UPDATE "sessions"',
             ),
         ));
     }
@@ -271,6 +271,6 @@ it('refreshes last activity without rewriting the payload for a resumed unmodifi
 
     expect($response->cookies())->toBeEmpty()
         ->and($connection->executed)->toHaveCount(1)
-        ->and($connection->executed[0])->toStartWith('UPDATE sessions SET last_activity = ?')
+        ->and($connection->executed[0])->toStartWith('UPDATE "sessions" SET last_activity = ?')
         ->and($connection->executed[0])->not->toContain('payload');
 })->issue(266);
