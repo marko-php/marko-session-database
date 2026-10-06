@@ -91,6 +91,11 @@ class StatementRecordingConnection implements ConnectionInterface
         return 'pgsql';
     }
 
+    public function supportsReturning(): bool
+    {
+        return true;
+    }
+
     /**
      * @return array<int, string>
      */

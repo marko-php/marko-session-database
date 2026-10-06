@@ -143,6 +143,11 @@ class MockConnection implements ConnectionInterface
     {
         return $this->driver;
     }
+
+    public function supportsReturning(): bool
+    {
+        return false;
+    }
 }
 
 function createDatabaseSessionConfig(): SessionConfig
