@@ -203,6 +203,15 @@ it('creates no session for a matched route that never touches it', function (): 
         ->and($connection->sessionWrites())->toBeEmpty();
 });
 
+it('sends no database query for a cookieless matched route that never touches the session', function (): void {
+    ['router' => $router, 'connection' => $connection] = botTrafficHarness();
+
+    $router->handle(botGet('/'));
+
+    expect($connection->queries)->toBeEmpty()
+        ->and($connection->executed)->toBeEmpty();
+})->issue(267);
+
 it('writes the session and sets the cookie for a matched route that stores a value', function (): void {
     ['router' => $router, 'connection' => $connection] = botTrafficHarness();
 
