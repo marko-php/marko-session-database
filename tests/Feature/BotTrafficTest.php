@@ -96,6 +96,12 @@ class StatementRecordingConnection implements ConnectionInterface
         return true;
     }
 
+    public function quoteIdentifier(
+        string $identifier,
+    ): string {
+        return '"' . str_replace('"', '""', $identifier) . '"';
+    }
+
     /**
      * @return array<int, string>
      */
